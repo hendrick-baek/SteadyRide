@@ -1,0 +1,264 @@
+<title>Pleos 개발 문서 분석</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: single reading column, verdict first, then evidence tables, then action list */
+:root {
+  --bg: #f5f7f6;
+  --surface: #ffffff;
+  --ink: #18201e;
+  --muted: #5b6764;
+  --line: #d9e0de;
+  --accent: #1f6f66;
+  --accent-soft: #e2efec;
+  --ok: #2c7a3f;   --ok-bg: #e4f2e7;
+  --warn: #9a6400; --warn-bg: #fbf0d9;
+  --bad: #b23a2e;  --bad-bg: #f9e3e0;
+  --info: #3c5a8a; --info-bg: #e5ebf5;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111615; --surface: #182020; --ink: #e6ecea; --muted: #9aa8a4; --line: #2b3634;
+    --accent: #6cc3b6; --accent-soft: #1d3330;
+    --ok: #7fcf8f; --ok-bg: #1c3123; --warn: #e8b85c; --warn-bg: #352a14;
+    --bad: #f0907f; --bad-bg: #3a1f1b; --info: #9db7e4; --info-bg: #1e2738;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111615; --surface: #182020; --ink: #e6ecea; --muted: #9aa8a4; --line: #2b3634;
+  --accent: #6cc3b6; --accent-soft: #1d3330;
+  --ok: #7fcf8f; --ok-bg: #1c3123; --warn: #e8b85c; --warn-bg: #352a14;
+  --bad: #f0907f; --bad-bg: #3a1f1b; --info: #9db7e4; --info-bg: #1e2738;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-body); font-size: 15.5px; line-height: 1.7;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 72px;
+  word-break: keep-all; overflow-wrap: anywhere;
+}
+main { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 52px; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.3; margin: 0; }
+h1 { font-size: clamp(1.8rem, 4vw, 2.4rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.35rem; font-weight: 700; }
+h3 { font-size: 1.05rem; font-weight: 600; }
+p { margin: 0; }
+section { display: flex; flex-direction: column; gap: 16px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.lede { color: var(--muted); max-width: 65ch; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 0.85rem; color: var(--muted); font-family: var(--font-mono); }
+header { display: flex; flex-direction: column; gap: 14px; }
+
+.verdict {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  padding: 24px; display: flex; flex-direction: column; gap: 14px;
+}
+.verdict p.big { font-size: 1.12rem; font-weight: 500; max-width: 65ch; }
+
+.scores { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.score { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.score .name { font-weight: 600; }
+.score .nums { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.9rem; color: var(--muted); }
+.score .nums b { color: var(--ink); font-size: 1.25rem; font-weight: 500; }
+.bar { height: 6px; border-radius: 3px; background: var(--line); position: relative; overflow: hidden; }
+.bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 3px; }
+.bar i.now { background: var(--muted); opacity: .55; }
+.score p { font-size: 0.86rem; color: var(--muted); line-height: 1.55; }
+
+ul.plain { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 8px; max-width: 70ch; }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 0.9rem; line-height: 1.55; }
+th, td { text-align: left; vertical-align: top; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+th { font-size: 0.78rem; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; background: var(--bg); }
+tr:last-child td { border-bottom: 0; }
+td code, p code, li code { font-family: var(--font-mono); font-size: 0.82em; background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; }
+
+.chip { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.chip.ok { color: var(--ok); background: var(--ok-bg); }
+.chip.warn { color: var(--warn); background: var(--warn-bg); }
+.chip.bad { color: var(--bad); background: var(--bad-bg); }
+.chip.info { color: var(--info); background: var(--info-bg); }
+
+.fixes { display: flex; flex-direction: column; gap: 12px; counter-reset: fix; }
+.fix { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; }
+.fix::before { counter-increment: fix; content: counter(fix); grid-row: span 3; font-family: var(--font-mono); font-size: 1.1rem; color: var(--accent); padding-top: 1px; }
+.fix .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.fix .where { font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted); }
+.fix p { color: var(--ink); min-width: 0; }
+.fix .to { color: var(--muted); font-size: 0.92rem; }
+.fix .to b { color: var(--accent); font-weight: 600; }
+
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.box { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+.timeline { display: flex; flex-direction: column; border-left: 2px solid var(--line); margin-left: 6px; }
+.timeline div { position: relative; padding: 0 0 16px 20px; }
+.timeline div::before { content: ""; position: absolute; left: -7px; top: 8px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); }
+.timeline div.due::before { background: var(--accent); }
+.timeline .d { font-family: var(--font-mono); font-size: 0.82rem; color: var(--accent); font-variant-numeric: tabular-nums; }
+
+.note { font-size: 0.84rem; color: var(--muted); max-width: 70ch; }
+footer { font-size: 0.82rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; }
+@media (max-width: 520px) { .fix { grid-template-columns: 1fr; } .fix::before { grid-row: auto; } }
+</style>
+
+<main>
+  <header>
+    <span class="eyebrow">Pleos Playground 개발 문서 전수 분석 · Steady Ride 관점</span>
+    <h1>Pleos 개발 문서 분석</h1>
+    <p class="lede">document.pleos.ai의 사이트맵에서 API 레퍼런스를 제외한 가이드 문서 153쪽(개발자 가이드 139쪽 + Connect Mobile 14쪽)을 모두 받아 읽었습니다. API 레퍼런스는 필요한 클래스만 SDK 바이너리에서 직접 확인했습니다. 각 내용이 동승자 멀미 저감 앱에 어떤 의미인지를 기준으로 정리했습니다.</p>
+    <div class="meta"><span>작성 2026-11-08</span><span>기준: Emulator v2.1.0 · Vehicle 2.3.2 · NaviHelper 3.0.5 · TTS/STT 3.3.1 · FusedLocation 1.1.3</span></div>
+  </header>
+
+  <section>
+    <span class="eyebrow">핵심 요약</span>
+    <div class="verdict">
+      <p class="big">문서를 끝까지 읽고 나니 기획에 유리한 사실 셋, 반드시 설계에 반영해야 할 제약 셋이 나왔습니다.</p>
+      <ul class="plain">
+        <li><span class="chip ok">기회</span> <b>내비가 "다음 회전까지 남은 거리"를 줍니다.</b> NaviHelper <code>onTBTInfo()</code>로 회전 종류와 거리를, <code>onCautionPointInfo()</code>로 과속방지턱·내리막 구간까지 거리를 받습니다. 차속으로 나누면 "3초 뒤 우회전"을 계산할 수 있어 기획서의 2~4초 예측이 성립합니다.</li>
+        <li><span class="chip ok">기회</span> <b>차속은 표준 Car API가 공식 경로입니다.</b> Pleos는 속도·기어 같은 표준 데이터를 AAOS Car API로 읽으라고 명시하고, Vehicle SDK 2.3.2에서 자체 속도 리스너를 아예 삭제했습니다. 대회 규정 걱정이 사라졌습니다.</li>
+        <li><span class="chip ok">기회</span> <b>음성 비서 Gleo에 앱 기능을 등록할 수 있습니다.</b> "아이가 멀미해"라고 말하면 멀미 완화 모드가 켜지는 연동이 가능합니다. 기술 활용성 점수에 직접 기여합니다.</li>
+        <li><span class="chip bad">제약</span> <b>운전 중 시선을 끄는 애니메이션은 금지입니다.</b> 운전자가 볼 수 있는 화면에 움직이는 광학 흐름을 띄우는 M1 원안은 규정과 충돌합니다.</li>
+        <li><span class="chip bad">제약</span> <b>주행 중 CPU는 5% 미만, 메모리는 400 MB 이하</b>(내비가 아닌 앱 기준)입니다. 60 fps 연속 렌더링은 이 예산을 넘습니다.</li>
+        <li><span class="chip warn">제약</span> <b>DO(주행 중 사용) 선언이 없으면 앱이 주행 중 아예 실행되지 않습니다.</b> 선언하더라도 CarUxRestrictions를 받아 기능별 제한을 직접 적용해야 합니다.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">문서 지도</span>
+    <h2>사이트 구성과 우리 앱과의 관련도</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>섹션</th><th>쪽수</th><th>내용</th><th>관련도</th></tr></thead>
+        <tbody>
+          <tr><td>앱 기획·설계 가이드</td><td>9</td><td>카테고리, 화면·윈도 모델, 주행 안전 설계, 지역별 주행 규제, 성능 기준, 하드웨어 접근 정책, SDK API 정책, 보안</td><td><span class="chip bad">매우 높음</span></td></tr>
+          <tr><td>SDK 사용 가이드</td><td>43</td><td>Vehicle·NaviHelper·TTS·STT·FusedLocation 설정, 권한, 초기화, 호출 패턴</td><td><span class="chip bad">매우 높음</span></td></tr>
+          <tr><td>UI Design Guide</td><td>42</td><td>디자인 원칙, 레이아웃·윈도 정책, 색·타이포·아이콘, 컴포넌트 24종, Driving view, Gleo AI 화면</td><td><span class="chip warn">높음</span></td></tr>
+          <tr><td>앱 개발 가이드</td><td>11</td><td>주행 규제 연동, ADB 명령, FAQ(차속 조회법), 오디오 포커스, TTS 선행 묵음, CCP 다이얼, IME, 음악·내비 앱 규칙</td><td><span class="chip warn">높음</span></td></tr>
+          <tr><td>앱 리뷰·제출 가이드</td><td>7</td><td>심사 기준(성능·안정성, 운전자 주의 분산, 개인정보, 콘텐츠, 등록정보), 제출 항목</td><td><span class="chip warn">높음</span></td></tr>
+          <tr><td>Gleo Interface</td><td>6</td><td>음성 비서에 앱 기능을 노출하는 App Schema·Callback 규격과 예제</td><td><span class="chip warn">높음</span></td></tr>
+          <tr><td>개발 환경·테스트</td><td>6</td><td>에뮬레이터 설치·설정, Virtual Console, 폼 팩터 테스트, Vehicle SDK 샘플 앱</td><td><span class="chip info">중간</span></td></tr>
+          <tr><td>앱 등록 가이드</td><td>4</td><td>보안, 태그 표기, 수동 업데이트 절차, 버전 관리</td><td><span class="chip info">중간</span></td></tr>
+          <tr><td>릴리스 노트</td><td>3</td><td>에뮬레이터 2.1.0, SDK 버전별 변경, Playground 주소 변경(developers.pleos.ai)</td><td><span class="chip info">중간</span></td></tr>
+          <tr><td>InfoLINK</td><td>2</td><td>다른 차량 플랫폼용 추가 주행 규제(QR 로그인 등)</td><td><span class="chip ok">낮음</span></td></tr>
+          <tr><td>Connect Mobile</td><td>14</td><td>스마트폰 차량 제어 앱 사용법과 42dot 사내 콘솔. 외부 개발자 대상 아님</td><td><span class="chip ok">낮음</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">기회</span>
+    <h2>기획에 쓸 수 있는 것</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>기능</th><th>API</th><th>Steady Ride 활용</th></tr></thead>
+        <tbody>
+          <tr><td>다음 회전 예고</td><td>NaviHelper <code>onTBTInfo(List&lt;TBTInfo&gt;)</code> · 필드 <code>type</code>(좌·우·급회전·유턴·IC·로터리 등 40여 종), <code>distance</code>, <code>description</code></td><td>M1 핵심. 남은 거리 ÷ 차속 = 회전까지 남은 시간. 2~4초 전에 방향 예고</td></tr>
+          <tr><td>노면 주의 지점</td><td><code>onCautionPointInfo()</code> · <code>SPEED_BUMP</code>, <code>DOWNHILL_CAUTION_AREA</code>, <code>NARROW_ROAD</code>, <code>ROAD_DAMAGE_ALERT</code> 등 + <code>remainDistance</code></td><td>과속방지턱·내리막 예고. 아이 멀미의 흔한 원인과 직결</td></tr>
+          <tr><td>편안한 경로</td><td>경로 옵션 <code>COMFORTABLE</code>(편안한 경로), <code>SCHOOL_ZONE</code> 등 · 권한 <code>NAVI_ROUTE_SEARCH</code></td><td>M4를 자체 계산 없이 구현. 아이 탑승 시 "편안한 경로로 바꿀까요?" 제안</td></tr>
+          <tr><td>도로 제한 속도</td><td><code>onCurrentRoadSpeedLimit(int)</code></td><td>M3 코칭 보조 지표</td></tr>
+          <tr><td>차속·기어</td><td>AAOS <code>CarPropertyManager</code> · <code>PERF_VEHICLE_SPEED</code>, <code>GEAR_SELECTION</code> · 권한 <code>CAR_SPEED</code></td><td>Pleos FAQ가 클러스터와 같은 속도를 쓰려면 이 방식을 쓰라고 안내. Vehicle SDK의 <code>VehicleSpeedListener</code>는 2.3.2에서 삭제됨</td></tr>
+          <tr><td>좌석별 탑승</td><td>Vehicle <code>Seat.registerSeatOccupancy(SeatArea)</code></td><td>동승자가 탄 좌석만 모드 활성화</td></tr>
+          <tr><td>공조·통풍·조명 제어</td><td><code>setHvacFanSpeed</code>, <code>setHvacRecirculation</code>, <code>setHvacSeatVentilation</code>, <code>setAmbientLightBrightnessColor</code> · 권한 <code>CONTROL_CAR_*</code>(사전 승인 대상)</td><td>M2. 실행 전 <code>check…Capabilities()</code>로 차종별 지원 여부와 값 범위 확인</td></tr>
+          <tr><td>음성 비서 연동</td><td>Gleo Interface · <code>assets/schema.json</code>에 기능 최대 3개, 인텐트로 호출, 7초 내 콜백</td><td>"아이가 멀미해" → <code>START_COMFORT_MODE</code>. 운전자가 화면을 안 보고 켤 수 있음</td></tr>
+          <tr><td>조수석 전용 창</td><td>와이드 디스플레이(Connect-W)는 조수석 앱 목록에서 실행한 앱을 조수석 창에만 표시</td><td>움직이는 큐를 운전자 시야 밖에 띄울 수 있는 공식 근거</td></tr>
+          <tr><td>음성 안내</td><td>TTS SDK · <code>ON_DEVICE</code> 모드는 앱 등록 불필요, 서버 모드는 My Project의 Client ID/Secret 필요</td><td>정차 중 코칭 멘트, 동승자 안내</td></tr>
+          <tr><td>테스트 도구</td><td>Virtual Console(ACCEL·BRAKE·조향·좌석), <code>adb shell cmd hmg_car_service --service drivingstate driving_regulation on|off</code>, <code>adb exec-out screenrecord</code></td><td>주행 규제 켜고 끄며 시연, 화면 녹화로 시연 영상 제작</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">제약</span>
+    <h2>설계에 반드시 반영할 규칙</h2>
+    <div class="fixes">
+      <div class="fix">
+        <div class="head"><span class="chip bad">필수</span><h3>운전 중 애니메이션 금지</h3><span class="where">UI Design Guide · 주행 안전 설계</span></div>
+        <p>"운전 중 동영상, 애니메이션 이미지, 텍스트 자동 스크롤로 운전자 시선을 유도하면 안 된다"는 기본 원칙입니다. 정보는 1~2초 안에 파악할 수 있어야 합니다.</p>
+        <p class="to"><b>앱 설계:</b> 운전석에서 보이는 화면에는 주행 중 정적인 방향 표시와 짧은 상태만 둡니다. 움직이는 큐는 조수석 창(Connect-W)이나 앰비언트 조명으로 보냅니다.</p>
+      </div>
+      <div class="fix">
+        <div class="head"><span class="chip bad">필수</span><h3>성능 예산: 주행 중 CPU 5% 미만, RAM 400 MB 이하</h3><span class="where">성능 및 리소스 설계 · 심사 기준</span></div>
+        <p>내비가 아닌 앱의 주행 중 기준입니다. 정차 중에는 25% 이하. 터치 응답 0.25초, 앱 실행 10초, 버튼 반응 2초 이내도 심사 항목입니다.</p>
+        <p class="to"><b>앱 설계:</b> 계속 그리는 화면 대신 이벤트가 있을 때만 그립니다. 신호 처리는 10~20 Hz로 충분하고, 큐 애니메이션은 짧게 끝냅니다.</p>
+      </div>
+      <div class="fix">
+        <div class="head"><span class="chip bad">필수</span><h3>DO 선언 + CarUxRestrictions 연동</h3><span class="where">주행 규제 정책 · 개발 가이드</span></div>
+        <p>DO 미선언 앱은 주행 중 사용할 수 없습니다. 선언한 앱도 <code>CarUxRestrictionsManager</code>로 제한 상태를 받아 적용해야 합니다. 한국 기준 주행 중에는 <b>차량·시트 설정 화면(NO_SETUP)</b>, 동영상, 긴 텍스트가 잠깁니다.</p>
+        <p class="to"><b>앱 설계:</b> 탑승자 프로필·민감도 설정은 정차 중에만 열고, 주행 중에는 잠금 안내를 표시합니다. 테스트는 adb 주행 규제 명령으로 켜고 끕니다.</p>
+      </div>
+      <div class="fix">
+        <div class="head"><span class="chip warn">권장</span><h3>하드웨어는 플랫폼 API로만</h3><span class="where">하드웨어 접근 정책</span></div>
+        <p>차량 센서에 직접 접근하지 말고 플랫폼 API를 쓰라고 하며, 자이로 등 일부 Android 센서는 차량에서 제한될 수 있다고 명시합니다.</p>
+        <p class="to"><b>앱 설계:</b> 핵심 신호는 조향각·차속·내비 TBT로 잡고, 가속도계는 있으면 쓰는 선택 입력으로 둡니다.</p>
+      </div>
+      <div class="fix">
+        <div class="head"><span class="chip warn">권장</span><h3>화면은 세로(1칸)와 가로(2칸) 둘 다</h3><span class="where">앱 구조 및 동작 모델 · Window Policy</span></div>
+        <p>앱 영역은 1~2개 창으로 나뉘고, 지정하지 않으면 세로 1칸으로 실행됩니다. 창 크기가 바뀌어도 핵심 기능이 보여야 하고, 백그라운드에서 돌아오면 마지막 상태를 복원해야 합니다.</p>
+        <p class="to"><b>앱 설계:</b> 세로 화면은 상태와 다음 예고 하나, 가로 화면은 여기에 주행 리포트를 추가합니다.</p>
+      </div>
+      <div class="fix">
+        <div class="head"><span class="chip warn">권장</span><h3>음성 출력은 오디오 포커스와 선행 묵음</h3><span class="where">오디오 포커스 · TTS 선행 묵음 가이드</span></div>
+        <p>모든 소리는 재생 전 포커스를 요청해야 하고, 음악과 동시에 나오려면 <code>AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK</code>을 씁니다. 음성 안내 앞에는 150~200 ms 묵음을 넣습니다. 시동이 꺼지면(Suspend) 포커스를 반납합니다.</p>
+      </div>
+      <div class="fix">
+        <div class="head"><span class="chip info">참고</span><h3>텍스트·대비·조작 기준</h3><span class="where">UI Design Guide</span></div>
+        <p>문장은 3줄 이하, 대비 4.5:1 이상, 중요한 글자는 높이 5 mm 이상, 한 손 조작. 폰트는 Asta Sans, 아이콘은 48 dp 그리드. 다이얼(CCP)을 지원하지 않으면 매니페스트에 <code>com.hmg.rotary.ROTARY_SUPPORTED=false</code>를 선언합니다.</p>
+      </div>
+      <div class="fix">
+        <div class="head"><span class="chip info">참고</span><h3>권한과 개인정보</h3><span class="where">심사 가이드 · 보안 가이드</span></div>
+        <p>Vehicle SDK 권한, 특히 <code>CONTROL_CAR_*</code> 쓰기 권한은 App Market과 사전 협의·승인된 것만 선언할 수 있습니다. 주행 데이터를 차량 밖으로 보낼 때는 익명화하고 마케팅에 쓰지 않아야 하며, 위치를 쓰면 위치정보 이용약관을 제출해야 합니다.</p>
+        <p class="to"><b>앱 설계:</b> 모든 처리를 차량 안에서 끝내는 기획서의 온디바이스 원칙은 심사 측면에서도 유리합니다. 필요한 권한 목록과 사유를 기획서에 표로 적습니다.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">결정</span>
+    <h2>프로토타입에 반영할 설계</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>항목</th><th>결정</th><th>근거</th></tr></thead>
+        <tbody>
+          <tr><td>카테고리</td><td>Lifestyle(대안: Kids)</td><td>프로젝트 생성 시 필수 선택. 카테고리와 실제 기능이 다르면 반려</td></tr>
+          <tr><td>예측 신호</td><td>1순위 내비 TBT·주의 지점, 2순위 조향각, 3순위 가속도계(선택)</td><td>NaviHelper 이벤트, 하드웨어 접근 정책</td></tr>
+          <tr><td>차량 데이터 경로</td><td>차속·기어: Car API / 조향·브레이크·좌석·공조·조명: Vehicle SDK</td><td>SDK API 정책(표준 데이터는 AAOS)</td></tr>
+          <tr><td>운전석 화면(주행 중)</td><td>정적 방향 화살표 + 멀미 위험 1단계 표시만</td><td>애니메이션 금지, 1~2초 인지</td></tr>
+          <tr><td>동승자 큐</td><td>앰비언트 밝기·색 + 조수석 창의 짧은 큐</td><td>Connect-W 조수석 창 정책</td></tr>
+          <tr><td>환경 개입(M2)</td><td>위험 상승 시 외기 전환·풍량·통풍. 실행 전 capability 확인</td><td>Vehicle SDK set/check API</td></tr>
+          <tr><td>음성</td><td>Gleo schema 3개: 멀미 모드 켜기/끄기, 편안한 경로 요청</td><td>Gleo Interface</td></tr>
+          <tr><td>렌더링</td><td>이벤트 기반, 신호 10~20 Hz</td><td>CPU 5% 예산</td></tr>
+          <tr><td>시연</td><td>Virtual Console + 앱 내 주행 로그 재생 + adb 주행 규제 토글 + screenrecord</td><td>테스트 가이드, ADB 레퍼런스</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">에뮬레이터 권장 사양은 외장 GPU(RTX 4060급)입니다. 맥북에서 에뮬레이터가 뜨겁고 무거운 것은 정상 범위이며, 빌드와 에뮬레이터 실행을 겹치지 않게 하는 편이 좋습니다.</p>
+  </section>
+
+  <section>
+    <span class="eyebrow">참고</span>
+    <h2>우리 앱과 무관하지만 알아둘 것</h2>
+    <ul class="plain">
+      <li>미디어 앱(동영상·게임·브라우저)은 주행 중 실행 자체가 금지됩니다. Steady Ride에 영상 콘텐츠를 넣으면 이 분류에 걸립니다.</li>
+      <li>App Market은 자동 업데이트가 없어 앱이 직접 버전 확인과 업데이트 안내(<code>market://detail?package=…</code>)를 구현해야 하고, 심사 요청마다 버전을 올려야 합니다.</li>
+      <li>등록 자료: 아이콘 512×512, 스크린샷 2장 이상(2560×1380 등), 앱 이름 30자 이하, APK 600 MB 미만, IARC 연령 등급.</li>
+      <li>Playground 주소가 developers.pleos.ai로 바뀌었고, 에뮬레이터 2.1.0부터 CRN 입력과 LLM SDK가 없어졌습니다.</li>
+      <li>Connect Mobile 문서는 42dot 사내망 전용 콘솔과 스마트폰 앱 사용법이라 이번 대회와는 관련이 없습니다.</li>
+    </ul>
+  </section>
+
+  <footer>
+    분석 범위: document.pleos.ai 사이트맵의 가이드 문서 전체(API 레퍼런스 제외) 153쪽, NaviHelper 3.0.5·navi-data 3.0.4·Vehicle 2.3.2 바이너리의 클래스 시그니처, Pleos Connect 에뮬레이터 v2.1.0 실측. 문서 원문은 한국어이며 인용은 요약입니다.
+  </footer>
+</main>

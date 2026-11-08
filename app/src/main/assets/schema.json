@@ -1,0 +1,35 @@
+{
+  "packageName": "ai.steadyride.app",
+  "appDescription": "Reduces passenger motion sickness by announcing upcoming vehicle motion and adjusting airflow and seat ventilation.",
+  "invokeWord": "스테디 라이드",
+  "version": "0.1.0",
+  "actionCalls": [
+    {
+      "type": "function",
+      "function": {
+        "name": "START_MOTION_SICKNESS_RELIEF",
+        "description": "Turn on motion sickness relief for passengers when someone in the car feels carsick.",
+        "parameters": { "type": "object", "properties": {}, "required": [] },
+        "component": "activity"
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "STOP_MOTION_SICKNESS_RELIEF",
+        "description": "Turn off the manual motion sickness relief and return to automatic mode.",
+        "parameters": { "type": "object", "properties": {}, "required": [] },
+        "component": "activity"
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "REQUEST_COMFORTABLE_ROUTE",
+        "description": "Re-route the current navigation using the comfortable route option with fewer sharp turns.",
+        "parameters": { "type": "object", "properties": {}, "required": [] },
+        "component": "activity"
+      }
+    }
+  ]
+}
