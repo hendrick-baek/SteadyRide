@@ -68,7 +68,15 @@ adb forward tcp:8088 tcp:8088   # 이후 브라우저에서 http://127.0.0.1:808
 
 ## APK
 
-릴리스 APK는 `apk/팀명_앱이름_release.apk` 또는 GitHub Releases에 올립니다. (제출 전 추가 예정)
+`apk/AeRoad_SteadyRide_release.apk` — v1.0.0 (versionCode 2), 패키지 `ai.steadyride.app`, minSdk 28 · targetSdk 34
+
+```bash
+adb install -r -g apk/AeRoad_SteadyRide_release.apk
+```
+
+다시 만들기: `./gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk`.
+`local.properties`에 `release.storeFile`, `release.storePassword`, `release.keyAlias`, `release.keyPassword`가 있으면
+팀 릴리스 키로, 없으면 디버그 키로 서명됩니다(키·비밀번호는 커밋하지 않습니다).
 
 ## 구조
 

@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -14,16 +16,29 @@ android {
         applicationId = "ai.steadyride.app"
         minSdk = 28
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
         testInstrumentationRunner = "ai.steadyride.app.ScenarioProbe"
+    }
+
+    val localProps = Properties().apply {
+        rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+    }
+    val releaseSigning = localProps.getProperty("release.storeFile")?.let { path ->
+        signingConfigs.create("release") {
+            storeFile = rootProject.file(path)
+            storePassword = localProps.getProperty("release.storePassword")
+            keyAlias = localProps.getProperty("release.keyAlias")
+            keyPassword = localProps.getProperty("release.keyPassword")
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // TODO: replace with a real release key before submission
-            signingConfig = signingConfigs.getByName("debug")
+            // Signed with the team's release key when local.properties has release.* entries
+            // (never committed); otherwise falls back to the debug key so the APK still installs.
+            signingConfig = releaseSigning ?: signingConfigs.getByName("debug")
         }
     }
 
