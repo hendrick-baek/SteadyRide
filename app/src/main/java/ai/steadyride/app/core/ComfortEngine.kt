@@ -142,6 +142,13 @@ class ComfortEngine(
             return Cue(if (steer < 0) Turn.LEFT else Turn.RIGHT, null, 0f, CueSource.STEERING)
         }
         if (v.brakePressed == true && speed > 3f) {
+            // Braking for a maneuver the route already knows about: announce that maneuver
+            // instead of a generic "slowing down", so the passenger gets one clear cue.
+            val target = v.maneuvers
+                .map { it to (it.distanceM / max(speed, 1f)).toFloat() }
+                .filter { (_, t) -> t <= BRAKE_LINK_S }
+                .minByOrNull { (_, t) -> t }
+            if (target != null) return Cue(target.first.turn, target.first.kind, target.second, CueSource.NAVI)
             return Cue(Turn.NONE, null, 0f, CueSource.BRAKE)
         }
         return null
@@ -159,5 +166,6 @@ class ComfortEngine(
         const val HARSH_MS2 = 3.0f       // ~0.3 G
         const val CUE_HORIZON_S = 4f     // announce maneuvers up to 4 s ahead
         const val STEER_CUE_DEG = 25f
+        const val BRAKE_LINK_S = 10f     // braking this close to a known maneuver belongs to it
     }
 }

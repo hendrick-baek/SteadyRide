@@ -9,14 +9,19 @@
 
 | 기능 | 설명 | 사용 API |
 |---|---|---|
-| 동승자 예고 | "3초 뒤 오른쪽으로 회전", "2초 뒤 과속방지턱" | NaviHelper `onTBTInfo`, `onCautionPointInfo` · Vehicle SDK 조향각·브레이크 |
+| 동승자 예고 | "3초 뒤 오른쪽 회전", "2초 뒤 과속방지턱" | NaviHelper `onTBTInfo`, `onCautionPointInfo` · Vehicle SDK 조향각·브레이크 |
 | 멀미 위험도 | 0~100, MSDV(ISO 2631) 계열 단순화 지표 | AAOS `PERF_VEHICLE_SPEED` · 조향각 |
-| 멀미 완화 모드 | 외기 유입, 풍량 증가, 조수석 통풍 | Vehicle SDK HVAC·Seat |
-| 앰비언트 신호 | 예고 순간 실내 조명 밝기 변화 | Vehicle SDK Light |
-| 운전자 리포트 | 정차 중에만 급조향·급가감속 요약 | — |
-| 편안한 경로 | 내비 경로 옵션 `COMFORTABLE`로 재탐색 | NaviHelper `changeRouteOption` |
+| 모션 큐 | 가장자리 입자가 가속·제동·회전 방향으로 흐름, 정지 시 숨쉬기. 계절 테마(꽃잎·물방울·단풍·눈) | 화면 (동승자 디스플레이 전용) |
+| 앰비언트 모션 라이트 | 실내 조명 색·밝기로 움직임 표현(제동 앰버·가속 청록·회전 보라), 기동 2초 전 선반영 | Vehicle SDK Light (밝기 0~100, RGB) |
+| 공간 사운드 | 회전 1초 전 소리가 반대편에서 회전 쪽으로 이동(ITD·도플러), 실시간 합성 | Android `AudioTrack` · 오디오 포커스 |
+| 100Hz 사운드 | 출발 시 100Hz 순음 1분 (Kagawa 외 2025) | Android `AudioTrack` |
+| 멀미 최소화 경로 | 허용 지연(+5~20분) 안에서 멀미 지수가 가장 낮은 경로 옵션으로 전환 | NaviHelper `changeRouteOption`, `getDestinationInfo` |
+| 운전 코칭 | 급제동·급출발·페달 잦은 전환·과속 회전 분석 → 맞춤 문구 | — |
+| 멀미 완화 모드 | 외기 유입, 풍량 증가, 조수석 통풍 (원래 설정 복원) | Vehicle SDK HVAC·Seat |
 | 음성 명령 | Gleo AI: 완화 모드 켜기/끄기, 편안한 경로 | `assets/schema.json` |
-| 데모 주행 | 우회전 → 과속방지턱 → S커브 → 정지 75초 반복 | 앱 내장 시나리오 |
+| 데모 주행 | 우회전 → 과속방지턱 → S커브 → 정체 구간 → 정지 반복 | 앱 내장 시나리오 |
+
+예고음 미리 듣기: `docs/sounds/*.wav`
 
 ## 실행 방법
 
@@ -46,13 +51,17 @@ adb forward tcp:8088 tcp:8088   # 이후 브라우저에서 http://127.0.0.1:808
 
 ```
 app/src/main/java/ai/steadyride/app/
-├── core/ComfortEngine.kt        예측·멀미 위험도 (차량 비의존 순수 로직)
-├── vehicle/LiveVehicleSource.kt Pleos SDK + Car API + 내비 + 주행 규제
-├── vehicle/DemoDriveSource.kt   데모 주행 시나리오
-├── vehicle/ComfortActuator.kt   조명·공조·통풍 제어
-├── SteadyRideController.kt      신호 → 엔진 → 제어 연결 (10 Hz)
-└── ui/MainScreen.kt             화면
-docs/                            기획 검토, Pleos 문서 분석
+├── core/          차량 비의존 순수 로직
+│   ├── ComfortEngine.kt   예측·멀미 위험도
+│   ├── DrivingCoach.kt    운전 패턴 분석·코칭 문구
+│   ├── RoutePlanner.kt    허용 지연 내 멀미 최소 경로 선택
+│   └── AmbientMood.kt     움직임 → 조명 색·밝기
+├── vehicle/       Pleos SDK·Car API 연동, 데모 시나리오, 공조·조명 제어
+├── audio/         공간 사운드·100Hz 합성(CueSynth)과 재생(CueSound)
+├── ui/            화면(MainScreen), 모션 큐(MotionCue)
+└── SteadyRideController.kt   신호 → 엔진 → 출력 연결 (10 Hz)
+app/src/main/res/font/  현대하모니 폰트 (현대자동차그룹 저작권, 저장소 비공개 유지)
+docs/                   기획 검토, Pleos 문서 분석, 예고음 샘플
 ```
 
 ## 협업 규칙

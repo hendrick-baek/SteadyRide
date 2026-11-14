@@ -28,7 +28,7 @@ class ComfortActuator(context: Context) {
         .onFailure { note("차량 제어 연결 실패: ${it.message}") }
         .getOrNull()
 
-    private var ambientArea: SeatArea? = null
+    private var ambientAreas: List<SeatArea> = emptyList()
     private var fanArea: SeatArea? = null
     private var fanMax = 8
     private var recircArea: SeatArea? = null
@@ -39,23 +39,10 @@ class ComfortActuator(context: Context) {
     private var savedFan: Int? = null
     private var baseBrightness = 40
 
-    private var lastCueKey: String? = null
     private var comfortOn = false
 
     init {
         probeCapabilities()
-    }
-
-    /** Ambient light pulse when a new cue appears; back to baseline when it ends. */
-    fun onCue(cue: Cue?) {
-        val key = cue?.let { "${it.source}-${it.turn}-${it.kind}" }
-        if (key == lastCueKey) return
-        lastCueKey = key
-        val area = ambientArea ?: return
-        val light = vehicle?.getLight() ?: return
-        val level = if (cue != null) 100 else baseBrightness
-        light.setAmbientLightBrightness(area, level, { _, _ -> }, { Log.w(TAG, "ambient", it) })
-        if (cue != null) note("앰비언트 신호: ${cue.text}")
     }
 
     /** Comfort mode: fresh air, stronger airflow, passenger seat ventilation. */
@@ -95,11 +82,16 @@ class ComfortActuator(context: Context) {
         val v = vehicle ?: return
         v.getLight().checkAmbientLightBrightnessColorCapabilities({ cfg, areas ->
             Log.i(TAG, "ambient color: access=${cfg.accessType} areas=$areas")
+            areas.forEach { a ->
+                Log.i(TAG, "ambient area seats=${a.values.joinToString()}")
+                v.getLight().getAmbientLightBrightnessColor(a, { c -> Log.i(TAG, "ambient color now=$c (0x${Integer.toHexString(c ?: 0)})") }, {})
+            }
+            v.getLight().getAmbientColorAutoByDriveModeEnabled({ Log.i(TAG, "ambient auto-by-drive-mode=$it") }, {})
         }, { Log.i(TAG, "ambient color unsupported: ${it.message}") })
         v.getLight().checkAmbientLightBrightnessCapabilities({ cfg, areas ->
             Log.i(TAG, "ambient brightness: access=${cfg.accessType} areas=$areas")
-            ambientArea = areas.keys.firstOrNull()
-            ambientArea?.let { a -> v.getLight().getAmbientLightBrightness(a, { b -> b?.let { baseBrightness = it } }, {}) }
+            ambientAreas = areas.keys.toList()
+            ambientAreas.firstOrNull()?.let { a -> v.getLight().getAmbientLightBrightness(a, { b -> b?.let { baseBrightness = it } }, {}) }
         }, { note("앰비언트 제어 미지원") })
         v.getHVAC().checkHvacFanSpeedCapabilities({ cfg, map ->
             Log.i(TAG, "fan: access=${cfg.accessType} $map")
@@ -122,7 +114,7 @@ class ComfortActuator(context: Context) {
         note("$what 실패: ${e.javaClass.simpleName}")
     }
 
-    private fun note(msg: String) {
+    fun note(msg: String) {
         val time = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
         _log.update { (listOf("$time  $msg") + it).take(6) }
     }

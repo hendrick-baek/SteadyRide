@@ -33,12 +33,19 @@ class MainActivity : ComponentActivity() {
         setContent {
             val ui by controller.ui.collectAsStateWithLifecycle()
             val log by controller.actuator.log.collectAsStateWithLifecycle()
+            val ambientLook by controller.ambient.look.collectAsStateWithLifecycle()
             MainScreen(
                 s = ui,
                 actionLog = log,
+                ambientLook = ambientLook,
+                onAmbient = controller::setAmbientMotion,
                 onMode = controller::setMode,
                 onComfort = controller::setManualComfort,
-                onComfortRoute = { controller.requestComfortableRoute() },
+                onRouteSearch = { controller.searchComfortRoute() },
+                onRouteTolerance = controller::setRouteTolerance,
+                onCueSound = controller::setCueSound,
+                onTone = controller::toggleTone,
+                onPreviewSound = controller::previewCueSound,
             )
         }
         handleVoiceAction(intent)
@@ -78,11 +85,12 @@ class MainActivity : ComponentActivity() {
                 replyToGleo(action, "success", "Motion sickness relief mode is back to automatic.")
             }
             ACTION_ROUTE -> {
-                val ok = controller.requestComfortableRoute()
+                val ok = controller.searchComfortRoute()
+                val min = controller.ui.value.route.toleranceMin
                 replyToGleo(
                     action,
                     if (ok) "success" else "fail",
-                    if (ok) "Re-routing with the comfortable route option." else "No active navigation route to change.",
+                    if (ok) "Looking for the gentlest route that arrives at most $min minutes later." else "A route search is already running.",
                 )
             }
         }

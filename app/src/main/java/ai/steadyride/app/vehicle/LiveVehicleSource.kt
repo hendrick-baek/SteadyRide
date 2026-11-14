@@ -11,6 +11,16 @@ import ai.pleos.playground.vehicle.listener.SteeringWheelAngleListener
 import ai.pleos.playground.navi.constants.NaviErrorCode
 import ai.pleos.playground.navi.constants.RouteOption
 import ai.pleos.playground.navi.data.CautionPoint
+import ai.pleos.playground.navi.data.DestinationInfo
+import ai.pleos.playground.navi.data.RouteStartInfo
+import ai.pleos.playground.navi.data.RouteStateInfo
+import ai.steadyride.app.core.RouteCandidate
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import ai.pleos.playground.navi.data.TBTInfo
 import ai.pleos.playground.navi.helper.NaviHelper
 import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
@@ -61,11 +71,63 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
         startNavi()
     }
 
-    override fun requestComfortableRoute(): Boolean {
+    /**
+     * Probes each route option in turn: switch the option, wait for re-routing, then read
+     * the remaining time/distance and the turn-by-turn + caution lists of that route.
+     * The original option is restored if anything fails.
+     *
+     * Note: the TBT list may only cover the upcoming part of a long route; the comparison
+     * then reflects the next stretch, which is where the difference matters most.
+     */
+    override suspend fun searchRoutes(onProgress: (done: Int, total: Int) -> Unit): List<RouteCandidate> {
+        val n = navi ?: return emptyList()
+        val routeState = ask<RouteStateInfo>({ pendingState = it }) { n.getRouteStateInfo() }
+        if (routeState == null || !routeState.isRouting) return emptyList()
+        var current: RouteOption = routeState.routeOption
+        val original = current
+        val out = mutableListOf<RouteCandidate>()
+        try {
+            ROUTE_OPTIONS.forEachIndexed { i, (name, label) ->
+                onProgress(i, ROUTE_OPTIONS.size)
+                val opt = RouteOption.valueOf(name)
+                if (opt != current) {
+                    rerouted.tryReceive() // drop stale events
+                    withContext(Dispatchers.Main) { n.changeRouteOption(opt) }
+                    withTimeoutOrNull(REROUTE_TIMEOUT_MS) { rerouted.receive() } ?: return@forEachIndexed
+                    current = opt
+                    delay(1200) // let TBT and caution points of the new route arrive
+                }
+                val dest = ask<DestinationInfo>({ pendingDest = it }) { n.getDestinationInfo() } ?: return@forEachIndexed
+                val turns = ask<List<Maneuver>>({ pendingTbt = it }) { n.getTBTInfo() } ?: tbt
+                out += RouteCandidate(name, label, dest.remainTime, dest.remainDistance, turns + cautions)
+            }
+            onProgress(ROUTE_OPTIONS.size, ROUTE_OPTIONS.size)
+        } catch (e: Exception) {
+            reportError("경로 비교", e)
+            runCatching { withContext(Dispatchers.Main) { n.changeRouteOption(original) } }
+            return emptyList()
+        }
+        return out
+    }
+
+    override suspend fun applyRouteOption(option: String): Boolean {
         val n = navi ?: return false
-        return runCatching { n.changeRouteOption(RouteOption.COMFORTABLE) }
-            .onFailure { reportError("편안한 경로 요청", it) }
-            .isSuccess
+        return runCatching {
+            withContext(Dispatchers.Main) { n.changeRouteOption(RouteOption.valueOf(option)) }
+        }.onFailure { reportError("경로 적용", it) }.isSuccess
+    }
+
+    // One-shot answers to navigation queries, completed from the listener.
+    @Volatile private var pendingState: CompletableDeferred<RouteStateInfo>? = null
+    @Volatile private var pendingDest: CompletableDeferred<DestinationInfo>? = null
+    @Volatile private var pendingTbt: CompletableDeferred<List<Maneuver>>? = null
+    private val rerouted = Channel<Unit>(Channel.CONFLATED)
+
+    private suspend fun <T> ask(register: (CompletableDeferred<T>) -> Unit, call: () -> Unit): T? {
+        val d = CompletableDeferred<T>()
+        register(d)
+        withContext(Dispatchers.Main) { runCatching(call) }
+        return withTimeoutOrNull(3000) { d.await() }
     }
 
     // ---------- Pleos NaviHelper (turn-by-turn + caution points) ----------
@@ -78,7 +140,28 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
     private val naviListener = object : NaviHelperEventListener {
         override fun onTBTInfo(list: List<TBTInfo>) {
             tbt = list.mapNotNull(NaviMapping::fromTbt)
+            pendingTbt?.complete(tbt)
             publishManeuvers()
+        }
+
+        override fun onRouteStateInfo(info: RouteStateInfo) {
+            pendingState?.complete(info)
+        }
+
+        override fun onDestinationInfo(info: DestinationInfo) {
+            pendingDest?.complete(info)
+        }
+
+        override fun onRoutingCompleted() {
+            rerouted.trySend(Unit)
+        }
+
+        override fun onReRouteEnded() {
+            rerouted.trySend(Unit)
+        }
+
+        override fun onRouteStarted(info: RouteStartInfo) {
+            rerouted.trySend(Unit)
         }
 
         override fun onCautionPointInfo(list: List<CautionPoint>) {
@@ -259,5 +342,6 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
 
     private companion object {
         const val TAG = "SteadyRide"
+        const val REROUTE_TIMEOUT_MS = 10_000L
     }
 }
