@@ -13,9 +13,19 @@ import ai.pleos.playground.navi.constants.RouteOption
 import ai.pleos.playground.navi.data.CautionPoint
 import ai.pleos.playground.navi.data.DestinationInfo
 import ai.pleos.playground.navi.data.RouteStartInfo
+import ai.pleos.playground.navi.data.RouteInfo
 import ai.pleos.playground.navi.data.RouteStateInfo
+import ai.pleos.playground.navi.data.NavigationScreenRequest
+import ai.steadyride.app.core.GeoPoint
+import ai.steadyride.app.core.NamyangScenario
+import ai.steadyride.app.core.ScenarioPhase
+import ai.steadyride.app.core.ScenarioUi
+import ai.steadyride.app.core.runNamyangScenario
+import ai.steadyride.app.core.RouteAnalysis
 import ai.steadyride.app.core.RouteCandidate
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -68,7 +78,15 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
         startPleos()
         startCarApi()
         startAccelerometer()
-        startNavi()
+        // The navigation connection outlives stop()/start(): keep it, just resume polling.
+        val failed = naviReady.isCompleted && naviReady.getCompletionExceptionOrNull() != null
+        if (navi == null || failed) {
+            releaseNavi()
+            startNavi()
+        } else {
+            mainHandler.removeCallbacks(tbtPoll)
+            mainHandler.post(tbtPoll)
+        }
     }
 
     /**
@@ -79,41 +97,188 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
      * Note: the TBT list may only cover the upcoming part of a long route; the comparison
      * then reflects the next stretch, which is where the difference matters most.
      */
+    /**
+     * Probes each route option for the destination being guided: request the same
+     * destination with that option, wait until the navigation has computed it, then read
+     * the remaining time/distance and the turn-by-turn + caution lists of that route.
+     *
+     * requestRoute(destination, option) is used rather than changeRouteOption(): on the Pleos
+     * Connect emulator the navigation accepts changeRouteOption but keeps the old route.
+     * The original option is restored if anything fails.
+     *
+     * Note: the TBT list may only cover the upcoming part of a long route; the comparison
+     * then reflects the next stretch, which is where the difference matters most.
+     */
     override suspend fun searchRoutes(onProgress: (done: Int, total: Int) -> Unit): List<RouteCandidate> {
         val n = navi ?: return emptyList()
-        val routeState = ask<RouteStateInfo>({ pendingState = it }) { n.getRouteStateInfo() }
-        if (routeState == null || !routeState.isRouting) return emptyList()
-        var current: RouteOption = routeState.routeOption
-        val original = current
+        // Note: RouteStateInfo.isRouting means "a route search is in progress", not "guiding".
+        // Whether a route is being guided is read from the destination info instead.
+        val routeState = ask<RouteStateInfo>({ pendingState = it }) { n.getRouteStateInfo() } ?: return emptyList()
+        val target = currentTarget(n) ?: return emptyList()
+        val original = routeState.routeOption
+        var current = original
         val out = mutableListOf<RouteCandidate>()
+        var optionsIgnored = false
         try {
             ROUTE_OPTIONS.forEachIndexed { i, (name, label) ->
                 onProgress(i, ROUTE_OPTIONS.size)
+                if (optionsIgnored) return@forEachIndexed
                 val opt = RouteOption.valueOf(name)
                 if (opt != current) {
-                    rerouted.tryReceive() // drop stale events
-                    withContext(Dispatchers.Main) { n.changeRouteOption(opt) }
-                    withTimeoutOrNull(REROUTE_TIMEOUT_MS) { rerouted.receive() } ?: return@forEachIndexed
+                    while (rerouted.tryReceive().isSuccess) Unit // drop stale events
+                    withContext(Dispatchers.Main) { n.requestRoute(target.copy(routeOption = opt)) }
+                    if (!waitForReroute(n, opt)) {
+                        // The navigation re-routed but kept its own option (seen on the Pleos
+                        // emulator): the other options would fail the same way, so stop here.
+                        Log.w(TAG, "route $name: navigation kept its own route option; comparison stopped")
+                        optionsIgnored = true
+                        runCatching { withContext(Dispatchers.Main) { n.requestRoute(target.copy(routeOption = original)) } }
+                        return@forEachIndexed
+                    }
                     current = opt
-                    delay(1200) // let TBT and caution points of the new route arrive
+                    delay(1500) // let TBT and caution points of the new route arrive
                 }
                 val dest = ask<DestinationInfo>({ pendingDest = it }) { n.getDestinationInfo() } ?: return@forEachIndexed
                 val turns = ask<List<Maneuver>>({ pendingTbt = it }) { n.getTBTInfo() } ?: tbt
-                out += RouteCandidate(name, label, dest.remainTime, dest.remainDistance, turns + cautions)
+                val c = RouteCandidate(name, label, dest.remainTime, dest.remainDistance, turns + cautions)
+                Log.i(TAG, "route $name: eta=${c.etaS}s dist=${c.distanceM}m turns=${c.turns} sharp=${c.sharpTurns} " +
+                    "uturn=${c.uTurns} bumps=${c.bumps} index=${c.sicknessIndex}")
+                out += c
             }
             onProgress(ROUTE_OPTIONS.size, ROUTE_OPTIONS.size)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             reportError("경로 비교", e)
-            runCatching { withContext(Dispatchers.Main) { n.changeRouteOption(original) } }
+            runCatching { withContext(Dispatchers.Main) { n.requestRoute(target.copy(routeOption = original)) } }
             return emptyList()
         }
         return out
     }
 
+    // ---------- Route analysis: score whatever route the navigation is guiding ----------
+
+    @Volatile private var routeDirty = true
+
+    fun markRouteChanged() {
+        routeDirty = true
+    }
+
+    /** True once after the navigation's route may have changed (new route, option, destination). */
+    fun consumeRouteChanged(): Boolean {
+        val dirty = routeDirty
+        routeDirty = false
+        return dirty
+    }
+
+    /**
+     * Reads the route being guided (option, remaining time/distance, the turn-by-turn list and
+     * caution points) and scores it. Null when nothing is being guided.
+     */
+    suspend fun analyzeCurrentRoute(): RouteAnalysis? {
+        // The NaviHelper object exists before its service is connected; queries sent earlier
+        // are never answered. Wait for the connection.
+        val n = withTimeoutOrNull(8_000) { naviReady.await() } ?: return null
+        val st = ask<RouteStateInfo>({ pendingState = it }) { n.getRouteStateInfo() } ?: return null
+        if (st.isRouting) return null // still computing; the caller retries
+        // The provider sometimes answers 0 m / 0 s first; ask again briefly.
+        var d: DestinationInfo? = null
+        for (attempt in 0 until 4) {
+            val got = ask<DestinationInfo>({ pendingDest = it }) { n.getDestinationInfo() }
+            if (got != null && got.remainDistance > 0 && got.remainTime > 0) { d = got; break }
+            delay(600)
+        }
+        val dest = d ?: return null
+        val turns = ask<List<Maneuver>>({ pendingTbt = it }) { n.getTBTInfo() } ?: tbt
+        val label = ROUTE_OPTION_LABELS[st.routeOption.name] ?: st.routeOption.name
+        val c = RouteCandidate(st.routeOption.name, label, dest.remainTime, dest.remainDistance, turns + cautions)
+        Log.i(TAG, "analysis ${dest.name}: ${c.label} eta=${c.etaS}s dist=${c.distanceM}m turns=${c.turns} " +
+            "sharp=${c.sharpTurns} uturn=${c.uTurns} bumps=${c.bumps} index=${c.sicknessIndex}")
+        return RouteAnalysis(dest.name.orEmpty(), c)
+    }
+
+    /**
+     * Requests the destination being guided again, so the navigation recomputes it with its
+     * current settings (e.g. toll roads avoided). Changing a navigation setting does not
+     * re-route the active guidance by itself. Returns true once the new route is ready.
+     */
+    suspend fun reRequestCurrentRoute(): Boolean {
+        val n = withTimeoutOrNull(8_000) { naviReady.await() } ?: return false
+        val target = currentTarget(n) ?: return false
+        while (rerouted.tryReceive().isSuccess) Unit
+        withContext(Dispatchers.Main) { n.requestRoute(target) }
+        delay(1500) // let the search start before polling its state
+        return withTimeoutOrNull(REROUTE_TIMEOUT_MS) {
+            var lastEta = -1
+            var done = false
+            while (!done) {
+                val evented = withTimeoutOrNull(800) { rerouted.receive() } != null
+                val st = ask<RouteStateInfo>({ pendingState = it }) { n.getRouteStateInfo() }
+                if (st != null && !st.isRouting) {
+                    val eta = ask<DestinationInfo>({ pendingDest = it }) { n.getDestinationInfo() }?.remainTime ?: -1
+                    done = eta > 0 && (evented || eta == lastEta)
+                    lastEta = eta
+                }
+            }
+            true
+        } ?: false
+    }
+
+    /** The destination being guided, as a [RouteInfo] that can be re-requested with another option. */
+    private var lastTarget: RouteInfo? = null
+
+    private suspend fun currentTarget(n: NaviHelper): RouteInfo? {
+        repeat(3) {
+            val d = ask<DestinationInfo>({ pendingDest = it }) { n.getDestinationInfo() } ?: return null
+            if (d.remainDistance <= 0 || d.remainTime <= 0) return null // nothing is being guided
+            val known = d.name == NamyangScenario.DESTINATION_NAME
+            val lat = if (d.latitude != 0.0) d.latitude else if (known) NamyangScenario.destination.latitude else null
+            val lon = if (d.longitude != 0.0) d.longitude else if (known) NamyangScenario.destination.longitude else null
+            if (lat != null && lon != null) {
+                return RouteInfo(
+                    latitude = lat,
+                    longitude = lon,
+                    poiName = d.name.orEmpty(),
+                    address = d.address.orEmpty(),
+                    poiId = d.poiId.orEmpty(),
+                    poiSubId = d.poiSubId.orEmpty(),
+                    routeOption = RouteOption.RECOMMENDED,
+                ).also { lastTarget = it }
+            }
+            delay(500) // the provider sometimes answers with 0/0 coordinates first
+        }
+        return null
+    }
+
+    /**
+     * Waits until the navigation is really guiding with [opt]. A completion callback is the
+     * fast path; because providers differ (and a cold Pleos search can take 25 s+), the route
+     * state is also polled: the option must match and the remaining time must be positive and
+     * stable across two reads.
+     */
+    private suspend fun waitForReroute(n: NaviHelper, opt: RouteOption): Boolean =
+        withTimeoutOrNull(REROUTE_TIMEOUT_MS) {
+            var lastEta = -1
+            var confirmed = false
+            while (!confirmed) {
+                val evented = withTimeoutOrNull(800) { rerouted.receive() } != null
+                val st = ask<RouteStateInfo>({ pendingState = it }) { n.getRouteStateInfo() }
+                if (st != null && !st.isRouting && st.routeOption == opt) {
+                    val eta = ask<DestinationInfo>({ pendingDest = it }) { n.getDestinationInfo() }?.remainTime ?: -1
+                    confirmed = eta > 0 && (evented || eta == lastEta)
+                    lastEta = eta
+                }
+            }
+            true
+        } ?: false
+
     override suspend fun applyRouteOption(option: String): Boolean {
         val n = navi ?: return false
+        val now = ask<RouteStateInfo>({ pendingState = it }) { n.getRouteStateInfo() }
+        if (now?.routeOption?.name == option) return true // already guiding with it
+        val target = lastTarget ?: currentTarget(n) ?: return false
         return runCatching {
-            withContext(Dispatchers.Main) { n.changeRouteOption(RouteOption.valueOf(option)) }
+            withContext(Dispatchers.Main) { n.requestRoute(target.copy(routeOption = RouteOption.valueOf(option))) }
         }.onFailure { reportError("경로 적용", it) }.isSuccess
     }
 
@@ -133,6 +298,7 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
     // ---------- Pleos NaviHelper (turn-by-turn + caution points) ----------
 
     private var navi: NaviHelper? = null
+    private var naviReady = CompletableDeferred<NaviHelper>()
     private var tbt: List<Maneuver> = emptyList()
     private var cautions: List<Maneuver> = emptyList()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -152,17 +318,29 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
             pendingDest?.complete(info)
         }
 
+        override fun onRouteOptionChanged(option: RouteOption) {
+            routeDirty = true
+        }
+
+        override fun onDestinationChanged() {
+            routeDirty = true
+        }
+
+        override fun onRouteCancelled() {
+            routeDirty = true
+        }
+
         override fun onRoutingCompleted() {
+            routeDirty = true
             rerouted.trySend(Unit)
         }
 
         override fun onReRouteEnded() {
+            routeDirty = true
             rerouted.trySend(Unit)
         }
 
-        override fun onRouteStarted(info: RouteStartInfo) {
-            rerouted.trySend(Unit)
-        }
+        // onRouteStarted means search started; it must not complete a reroute wait.
 
         override fun onCautionPointInfo(list: List<CautionPoint>) {
             cautions = list.mapNotNull(NaviMapping::fromCaution)
@@ -184,15 +362,64 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
 
     private fun publishManeuvers() = _state.update { it.copy(maneuvers = tbt + cautions) }
 
+    /** Final shutdown: disconnects from the navigation. */
+    fun release() {
+        stop()
+        releaseNavi()
+    }
+
+    private fun releaseNavi() {
+        mainHandler.removeCallbacks(tbtPoll)
+        naviReady.cancel()
+        navi?.let { n -> runCatching { n.removeListener(naviListener); n.release() } }
+        navi = null
+    }
+
     private fun startNavi() {
+        val ready = CompletableDeferred<NaviHelper>()
+        naviReady = ready
         runCatching {
             val n = NaviHelper(context)
-            n.initialize(
-                { n.addListener(naviListener); mainHandler.post(tbtPoll) },
-                { reportError("내비 연결", it) },
-            )
             navi = n
-        }.onFailure { reportError("내비 초기화", it) }
+            n.initialize(
+                { mainHandler.post {
+                    if (navi === n && naviReady === ready) {
+                        n.addListener(naviListener)
+                        mainHandler.post(tbtPoll)
+                        ready.complete(n)
+                    }
+                } },
+                { error ->
+                    ready.completeExceptionally(error)
+                    reportError("내비 연결", error)
+                },
+            )
+        }.onFailure { ready.completeExceptionally(it); reportError("내비 초기화", it) }
+    }
+
+    suspend fun startNamyangScenario(progress: (ScenarioUi) -> Unit): ScenarioUi =
+        withContext(Dispatchers.Main.immediate) {
+            val n = withTimeout(8_000) { naviReady.await() }
+            val gateway = ScenarioNaviGateway(n)
+            try { runNamyangScenario(gateway, progress) } finally { gateway.close() }
+        }
+
+    /**
+     * Reads the route the navigation is guiding right now and reports it as the Namyang
+     * scenario if it leads there. Used when the app comes back to the front: while the
+     * navigation was in front, Android froze this app and the original wait timed out.
+     */
+    suspend fun checkNamyangRoute(): ScenarioUi? = withContext(Dispatchers.Main.immediate) {
+        val n = withTimeoutOrNull(8_000) { naviReady.await() } ?: return@withContext null
+        val d = ask<DestinationInfo>({ pendingDest = it }) { n.getDestinationInfo() } ?: return@withContext null
+        val onRoute = NamyangScenario.isDestination(GeoPoint(d.latitude, d.longitude)) && d.remainDistance > 0 && d.remainTime > 0
+        if (!onRoute) return@withContext null
+        ScenarioUi(ScenarioPhase.READY, "남양연구소 경로를 확인했어요. 회전 안내를 멀미 케어에 연결해요.", d.remainDistance, d.remainTime)
+    }
+
+    suspend fun showNavigation() = withContext(Dispatchers.Main.immediate) {
+        val n = withTimeout(8_000) { naviReady.await() }
+        n.requestNavigationScreen(NavigationScreenRequest.Foreground)
     }
 
     override fun stop() {
@@ -216,9 +443,10 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
         }
         car = null
 
+        // Only pause TBT polling. Starting a route or comparing route options brings the
+        // navigation app to the front and sends this app to the background; releasing the
+        // NaviHelper here would abort the very request the user just made.
         mainHandler.removeCallbacks(tbtPoll)
-        navi?.let { n -> runCatching { n.removeListener(naviListener); n.release() } }
-        navi = null
 
         sensorManager?.unregisterListener(accelListener)
         sensorManager = null
@@ -290,11 +518,18 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
     }
 
     private fun startCarApi() {
-        val c = runCatching { Car.createCar(context) ?: error("Car service unavailable") }
-            .onFailure { reportError("Car 서비스", it) }
-            .getOrNull() ?: return
+        // The lifecycle listener (re)registers whenever the car service becomes ready, so a
+        // car service restart does not leave speed and driving restrictions disconnected.
+        val c = runCatching {
+            Car.createCar(context, mainHandler, Car.CAR_WAIT_TIMEOUT_DO_NOT_WAIT) { connected, ready ->
+                if (ready) registerCarCallbacks(connected)
+            }
+        }.onFailure { reportError("Car 서비스", it) }.getOrNull() ?: return
         car = c
+    }
 
+    private fun registerCarCallbacks(c: Car) {
+        _state.update { st -> st.copy(errors = st.errors.filterNot { it.startsWith("Car 서비스") }) }
         runCatching {
             val pm = c.getCarManager(Car.PROPERTY_SERVICE) as CarPropertyManager
             pm.registerCallback(speedCallback, VehiclePropertyIds.PERF_VEHICLE_SPEED, 10f)
@@ -342,6 +577,6 @@ class LiveVehicleSource(private val context: Context) : VehicleSource {
 
     private companion object {
         const val TAG = "SteadyRide"
-        const val REROUTE_TIMEOUT_MS = 10_000L
+        const val REROUTE_TIMEOUT_MS = 25_000L // a cold Pleos route search can take 25 s
     }
 }

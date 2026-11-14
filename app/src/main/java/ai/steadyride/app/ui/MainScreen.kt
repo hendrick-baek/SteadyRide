@@ -3,11 +3,15 @@ package ai.steadyride.app.ui
 import ai.steadyride.app.R
 import ai.steadyride.app.SourceMode
 import ai.steadyride.app.UiState
+import ai.steadyride.app.core.CoachTip
 import ai.steadyride.app.core.CoachTopic
 import ai.steadyride.app.core.Cue
 import ai.steadyride.app.core.CueSource
 import ai.steadyride.app.core.Phase
 import ai.steadyride.app.core.RiskLevel
+import ai.steadyride.app.core.RoutePlanner
+import ai.steadyride.app.core.sicknessGrade
+import ai.steadyride.app.core.ScenarioPhase
 import ai.steadyride.app.vehicle.AmbientLook
 import ai.steadyride.app.vehicle.ManeuverKind
 import ai.steadyride.app.vehicle.SeatPos
@@ -136,7 +140,7 @@ private fun T(
 }
 
 private enum class Detail(val title: String) {
-    COMFORT("멀미 완화 모드"), MOTION("모션 큐 · 실내 조명"), SOUND("공간 사운드"), ROUTE("멀미 최소화 경로")
+    COMFORT("멀미 완화 모드"), MOTION("스테디 플로우 · 실내 조명"), SOUND("공간 사운드"), ROUTE("멀미 최소화 경로")
 }
 
 private class Actions(
@@ -148,6 +152,9 @@ private class Actions(
     val onTone: () -> Unit,
     val onPreview: () -> Unit,
     val onAmbient: (Boolean) -> Unit,
+    val onNamyangScenario: () -> Unit,
+    val onNavigationScreen: () -> Unit,
+    val onRouteResearch: () -> Unit,
 )
 
 private class MotionSettings(
@@ -172,17 +179,21 @@ fun MainScreen(
     onCueSound: (Boolean) -> Unit,
     onTone: () -> Unit,
     onPreviewSound: () -> Unit,
+    onNamyangScenario: () -> Unit,
+    onNavigationScreen: () -> Unit,
+    onRouteResearch: () -> Unit,
 ) {
-    var motionCueOn by rememberSaveable { mutableStateOf(true) }
+    var flowOn by rememberSaveable { mutableStateOf(true) }
     var seasonPick by rememberSaveable { mutableIntStateOf(-1) } // -1 = follow the calendar
     var detail by rememberSaveable { mutableStateOf<Detail?>(null) }
     val season = if (seasonPick < 0) Season.now() else Season.entries[seasonPick]
     val onPassengerDisplay = (LocalView.current.display?.displayId ?: Display.DEFAULT_DISPLAY) != Display.DEFAULT_DISPLAY
-    // Guide: no moving graphics where the driver may look while driving. Motion cues stay on
+    // Guide: no moving graphics where the driver may look while driving. Steady Flow stays on
     // the passenger display; the demo plays them anyway so the effect can be shown.
     val motionAllowed = !s.vehicle.drivingRestricted || onPassengerDisplay || s.mode == SourceMode.DEMO
-    val motion = MotionSettings(motionCueOn, seasonPick, season, motionAllowed, { motionCueOn = it }, { seasonPick = it })
-    val actions = Actions(onMode, onComfort, onRouteSearch, onRouteTolerance, onCueSound, onTone, onPreviewSound, onAmbient)
+    val motion = MotionSettings(flowOn, seasonPick, season, motionAllowed, { flowOn = it }, { seasonPick = it })
+    val actions = Actions(onMode, onComfort, onRouteSearch, onRouteTolerance, onCueSound, onTone, onPreviewSound, onAmbient,
+        onNamyangScenario, onNavigationScreen, onRouteResearch)
 
     CompositionLocalProvider(LocalTextStyle provides LocalTextStyle.current.copy(fontFamily = Harmony)) {
     Box(
@@ -215,7 +226,7 @@ fun MainScreen(
             BottomLine(s, actionLog)
         }
         if (motion.on && motion.allowed && s.vehicle.hasPassenger) {
-            MotionCueOverlay(
+            SteadyFlowOverlay(
                 lateralG = s.comfort.lateralG,
                 longitudinalG = s.comfort.longitudinalG,
                 season = season,
@@ -287,7 +298,7 @@ private fun Stage(s: UiState, look: AmbientLook?, modifier: Modifier) {
     val glowAlpha by animateFloatAsState(if (cue != null) 0.30f else 0.16f, tween(900), label = "glowA")
     val shape = RoundedCornerShape(36.dp)
 
-    Box(
+    BoxWithConstraints(
         modifier
             .clip(shape)
             .background(Ink.surface)
@@ -295,6 +306,8 @@ private fun Stage(s: UiState, look: AmbientLook?, modifier: Modifier) {
             .border(1.dp, Ink.hairline, shape)
             .padding(36.dp),
     ) {
+        // Short stage (split screen next to the navigation): smaller glyph, no seat map.
+        val compact = maxHeight < 520.dp
         Caption("다음 움직임", modifier = Modifier.align(Alignment.TopStart))
 
         Column(
@@ -303,25 +316,19 @@ private fun Stage(s: UiState, look: AmbientLook?, modifier: Modifier) {
             verticalArrangement = Arrangement.Center,
         ) {
             when {
-                cue != null -> CueHero(cue, tint)
+                cue != null -> CueHero(cue, tint, compact)
                 s.comfort.phase == Phase.PARKED -> ParkedHero(s)
                 else -> CalmHero(s)
             }
         }
 
-        SeatMap(s, Modifier.align(Alignment.BottomStart))
-        nextBeyondHorizon(s)?.takeIf { cue == null }?.let {
-            Row(Modifier.align(Alignment.BottomEnd), verticalAlignment = Alignment.CenterVertically) {
-                Caption("앞으로", modifier = Modifier.padding(end = 10.dp))
-                T(it, 17.sp, Ink.text2)
-            }
-        }
+        if (!compact) SeatMap(s, Modifier.align(Alignment.BottomStart))
     }
 }
 
 @Composable
-private fun CueHero(cue: Cue, tint: Color) {
-    CueGlyph(cue, tint, Modifier.size(210.dp))
+private fun CueHero(cue: Cue, tint: Color, compact: Boolean) {
+    CueGlyph(cue, tint, Modifier.size(if (compact) 150.dp else 210.dp))
     Spacer(Modifier.height(34.dp))
     val (whenText, whatText) = cueParts(cue)
     T(whenText, 26.sp, tint, FontWeight.Normal)
@@ -334,7 +341,20 @@ private fun CueHero(cue: Cue, tint: Color) {
 @Composable
 private fun CalmHero(s: UiState) {
     T(if (s.vehicle.hasPassenger) "당분간 큰 움직임 없음" else "동승자 없음", 22.sp, Ink.text2)
-    val tip = s.coach?.takeIf { s.comfort.phase == Phase.DRIVING || it.topic != CoachTopic.LEARNING } ?: return
+    val tip = s.coach?.takeIf { s.comfort.phase == Phase.DRIVING || it.topic != CoachTopic.LEARNING }
+    if (tip != null) CoachBlock(tip)
+    // The next maneuver beyond the cue horizon, centered under the coaching.
+    nextBeyondHorizon(s)?.let {
+        Spacer(Modifier.height(40.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Caption("다음", modifier = Modifier.padding(end = 12.dp))
+            T(it, 22.sp, Ink.text2)
+        }
+    }
+}
+
+@Composable
+private fun CoachBlock(tip: CoachTip) {
     Spacer(Modifier.height(44.dp))
     val color = when (tip.topic) {
         CoachTopic.SMOOTH -> Ink.calm
@@ -479,6 +499,8 @@ private fun RightColumn(
 ) {
     Column(modifier.verticalScroll(rememberScrollState())) {
         if (detail == null) {
+            ScenarioCard(s, a)
+            Spacer(Modifier.height(26.dp))
             RiskGauge(s)
             Spacer(Modifier.height(26.dp))
             Tiles(s, look, motion, a, open)
@@ -542,11 +564,14 @@ private fun Tiles(s: UiState, look: AmbientLook?, motion: MotionSettings, a: Act
     }
     val tone = s.toneRemainingS
     val r = s.route
-    val routeValue = r.plan?.chosen?.let { "${it.label} +${r.plan.delayMin(it)}분" } ?: "+${r.toleranceMin}분 이내"
+    val routeValue = when {
+        s.mode == SourceMode.LIVE && r.analysis != null -> "현재 경로 멀미 ${r.analysis.sicknessIndex}"
+        else -> r.plan?.chosen?.let { "${it.label} +${r.plan.delayMin(it)}분" } ?: "+${r.toleranceMin}분 이내"
+    }
     val rows = listOf(
         listOf(
             TileSpec(Icon.WIND, "완화 모드", comfortValue, s.comfortModeOn) { open(Detail.COMFORT) },
-            TileSpec(Icon.PARTICLES, "모션 큐", if (!motion.on) "꺼짐" else if (!motion.allowed) "동승자 화면 전용" else motion.season.label + " · " + motion.season.particle, motion.on && motion.allowed) { open(Detail.MOTION) },
+            TileSpec(Icon.PARTICLES, "스테디 플로우", if (!motion.on) "꺼짐" else if (!motion.allowed) "동승자 화면 전용" else motion.season.label + " · " + motion.season.particle, motion.on && motion.allowed) { open(Detail.MOTION) },
         ),
         listOf(
             TileSpec(Icon.LIGHT, "실내 조명", if (s.ambientOn) "움직임 연동" else "꺼짐", s.ambientOn, swatch = ambientColor(look)?.takeIf { s.ambientOn }) { open(Detail.MOTION) },
@@ -646,7 +671,7 @@ private fun ComfortDetail(s: UiState, a: Actions) {
 
 @Composable
 private fun MotionDetail(s: UiState, look: AmbientLook?, m: MotionSettings, a: Actions) {
-    Section("모션 큐", if (m.allowed) "화면 가장자리 입자가 차의 가속·제동·회전을 따라 흘러요" else "주행 중에는 동승자 화면에서만 표시돼요") {
+    Section("스테디 플로우", if (m.allowed) "화면 가장자리 입자가 차의 가속·제동·회전을 따라 흘러요" else "주행 중에는 동승자 화면에서만 표시돼요") {
         Pills(listOf("켬", "끔"), if (m.on) 0 else 1) { m.onToggle(it == 0) }
     }
     Section("계절 테마") {
@@ -686,10 +711,48 @@ private fun SoundDetail(s: UiState, a: Actions) {
 private val TOLERANCES = listOf(5, 10, 15, 20)
 
 @Composable
+private fun ScenarioCard(s: UiState, a: Actions) {
+    val scenario = s.scenario
+    val shape = RoundedCornerShape(22.dp)
+    Column(Modifier.fillMaxWidth().clip(shape).background(Ink.surface)
+        .border(1.dp, Ink.navi.copy(alpha = 0.3f), shape).padding(22.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Caption("내비 시나리오", Ink.navi)
+        T("현재 위치 → 남양연구소", 25.sp, Ink.text, FontWeight.Medium)
+        T("화성시 현대연구소로 150 · 내비의 현재 위치에서 출발", 15.sp, Ink.text2)
+        PrimaryButton(
+            if (scenario.busy) "내비 확인 중…" else "남양연구소로 안내 시작",
+            a.onNamyangScenario,
+            enabled = !scenario.busy && !s.route.searching && !s.vehicle.drivingRestricted,
+        )
+        if (s.vehicle.drivingRestricted) T("정차 후 설정할 수 있어요", 15.sp, Ink.watch)
+        T(scenario.message, 16.sp, when (scenario.phase) {
+            ScenarioPhase.READY -> Ink.calm
+            ScenarioPhase.ERROR -> Ink.watch
+            else -> Ink.text2
+        })
+        if (scenario.phase == ScenarioPhase.READY) {
+            T("%.1f km · 약 %d분".format((scenario.distanceM ?: 0) / 1000.0,
+                ((scenario.durationS ?: 0) + 59) / 60), 22.sp, Ink.navi)
+            T("경로 확인 시점의 내비 예상값", 14.sp, Ink.text3)
+        }
+        if (s.mode == SourceMode.LIVE && !scenario.busy) {
+            GhostButton("내비 화면 열기", a.onNavigationScreen)
+        }
+    }
+}
+
+@Composable
 private fun RouteDetail(s: UiState, a: Actions) {
     val r = s.route
     // Korea: settings are locked while driving (NO_SETUP); the demo stays editable for presenting.
     val canEdit = !s.vehicle.drivingRestricted || s.mode == SourceMode.DEMO
+    ScenarioCard(s, a)
+    Spacer(Modifier.height(24.dp))
+    if (s.mode == SourceMode.LIVE) {
+        LiveRouteAnalysis(s, a, canEdit)
+        return
+    }
     Section("허용 도착 지연", "최단 경로보다 이만큼까지 늦어도 괜찮아요") {
         if (canEdit) {
             Pills(TOLERANCES.map { "+${it}분" }, TOLERANCES.indexOf(r.toleranceMin).coerceAtLeast(0)) { a.onRouteTolerance(TOLERANCES[it]) }
@@ -703,7 +766,7 @@ private fun RouteDetail(s: UiState, a: Actions) {
             r.plan != null -> "다시 탐색"
             else -> "멀미 적은 경로 탐색"
         },
-        enabled = !r.searching,
+        enabled = !r.searching && !s.scenario.busy,
         onClick = a.onRouteSearch,
     )
     r.plan?.let { plan ->
@@ -740,6 +803,112 @@ private fun RouteDetail(s: UiState, a: Actions) {
     r.message?.let {
         Spacer(Modifier.height(16.dp))
         T(it, 16.sp, Ink.text2)
+    }
+}
+
+/** Appends the Korean particle that fits the last syllable (받침 → [withFinal], else [withoutFinal]). */
+private fun josa(word: String, withFinal: String, withoutFinal: String): String {
+    val c = word.lastOrNull() ?: return word + withoutFinal
+    val hasFinal = c in '가'..'힣' && (c - '가') % 28 != 0
+    return word + if (hasFinal) withFinal else withoutFinal
+}
+
+private fun gradeColor(index: Int) = when {
+    index <= 30 -> Ink.calm
+    index <= 70 -> Ink.watch
+    else -> Ink.high
+}
+
+/**
+ * Test-vehicle mode: the navigation chooses the route (it ignores route-option requests from
+ * apps on Pleos Connect), so Steady Ride scores whatever route it is guiding. Every route the
+ * user picks in the navigation for the same destination is added to the comparison.
+ */
+@Composable
+private fun LiveRouteAnalysis(s: UiState, a: Actions, canEdit: Boolean) {
+    val r = s.route
+    val cur = r.analysis
+    Section("현재 경로 멀미 분석", "내비가 안내하는 경로의 회전·과속방지턱을 분석해요") {
+        if (cur == null) {
+            T(if (r.analyzing) "경로를 분석하고 있어요…" else "내비에서 목적지를 설정하면 자동으로 분석해요", 18.sp, Ink.text2)
+        } else {
+            Row(verticalAlignment = Alignment.Bottom) {
+                T("${cur.sicknessIndex}", 56.sp, Ink.text, FontWeight.ExtraLight)
+                Spacer(Modifier.width(12.dp))
+                T(sicknessGrade(cur.sicknessIndex), 20.sp, gradeColor(cur.sicknessIndex), modifier = Modifier.padding(bottom = 10.dp))
+            }
+            T("${cur.label} · %.1f km · 약 %d분".format(cur.distanceM / 1000.0, (cur.etaS + 59) / 60), 17.sp, Ink.text)
+            Spacer(Modifier.height(4.dp))
+            T("회전 ${cur.turns} · 급회전 ${cur.sharpTurns} · 유턴 ${cur.uTurns} · 과속방지턱 ${cur.bumps}", 15.sp, Ink.text2)
+        }
+    }
+    // With a single route there is nothing to trade off, so the arrival-delay limit only
+    // appears once the user has tried a second route in the navigation.
+    if (r.history.size == 1) {
+        Section("다른 경로와 비교하기") {
+            T("내비를 열어 설정(⚙)에서 경로 옵션(유료도로 우회 등)을 바꾼 뒤 '바뀐 설정으로 다시 탐색'을 누르면 새 경로도 분석해 비교해 드려요.", 16.sp, Ink.text2)
+        }
+    }
+    if (r.history.size >= 2) {
+        val plan = RoutePlanner.choose(r.history, r.toleranceMin)
+        Section("분석한 경로 비교", "내비에서 다른 경로를 고르면 자동으로 분석해 여기에 추가돼요") {
+            // Arrival-delay limit, inline: decides which route gets the "추천" mark.
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 10.dp)) {
+                T("추천 기준 · 가장 빠른 경로보다", 15.sp, Ink.text3, modifier = Modifier.padding(end = 12.dp))
+                if (canEdit) {
+                    Pills(TOLERANCES.map { "+${it}분" }, TOLERANCES.indexOf(r.toleranceMin).coerceAtLeast(0)) { a.onRouteTolerance(TOLERANCES[it]) }
+                } else {
+                    T("+${r.toleranceMin}분 이내", 16.sp, Ink.text)
+                }
+            }
+            r.history.forEach { c ->
+                val current = c == cur
+                val best = c == plan.chosen && r.history.size > 1
+                val within = plan.withinTolerance(c)
+                val delay = plan.delayMin(c)
+                val shape = RoundedCornerShape(18.dp)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .clip(shape)
+                        .background(if (current) Ink.surfaceHi else Color.Transparent)
+                        .border(1.dp, if (current) Ink.hairlineHi else Ink.hairline, shape)
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        T(c.label, 18.sp, if (within) Ink.text else Ink.text3, if (current) FontWeight.Medium else FontWeight.Normal)
+                        val tags = listOfNotNull(if (current) "안내 중" else null, if (best) "추천" else null)
+                        if (tags.isNotEmpty()) T(tags.joinToString(" · "), 14.sp, if (best) Ink.calm else Ink.navi)
+                    }
+                    T(
+                        when {
+                            !within -> "+${delay}분 · 범위 초과"
+                            delay == 0 -> "최단 · 멀미 ${c.sicknessIndex}"
+                            else -> "+${delay}분 · 멀미 ${c.sicknessIndex}"
+                        },
+                        16.sp, if (within) gradeColor(c.sicknessIndex) else Ink.text3,
+                    )
+                }
+            }
+            val best = plan.chosen
+            Spacer(Modifier.height(10.dp))
+            T(
+                when {
+                    best == null -> "허용 시간 안에 들어오는 경로가 없어요."
+                    best == cur -> "지금 안내 중인 경로가 허용 시간 안에서 가장 편해요."
+                    plan.delayMin(best) <= 0 ->
+                        "${josa(best.label, "이", "가")} 가장 빠르면서 멀미 지수도 ${best.sicknessIndex}로 더 낮아요. 내비에서 이 경로를 선택해 보세요."
+                    else -> "${josa(best.label, "이", "가")} ${plan.delayMin(best)}분 더 걸리지만 멀미 지수가 ${best.sicknessIndex}로 더 낮아요. 내비에서 이 경로를 선택해 보세요."
+                },
+                16.sp, Ink.text2,
+            )
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        PrimaryButton("내비 열기", a.onNavigationScreen)
+        GhostButton(if (r.analyzing) "탐색·분석 중…" else "바뀐 설정으로 다시 탐색", a.onRouteResearch)
     }
 }
 

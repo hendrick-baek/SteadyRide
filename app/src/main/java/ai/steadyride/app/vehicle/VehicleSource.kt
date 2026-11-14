@@ -22,6 +22,17 @@ interface VehicleSource {
     suspend fun applyRouteOption(option: String): Boolean = false
 }
 
+/** Korean names of every navigation route option (the navigation may use any of them). */
+val ROUTE_OPTION_LABELS = mapOf(
+    "RECOMMENDED" to "추천 경로",
+    "SHORT_DISTANCE" to "최단 거리",
+    "SHORT_TIME" to "최소 시간",
+    "FREE" to "무료도로 우선",
+    "HIGHWAY" to "고속도로 우선",
+    "COMFORTABLE" to "편안한 경로",
+    "SCHOOL_ZONE" to "어린이 보호구역 회피",
+)
+
 /** Route options compared when looking for the least sickening route. */
 val ROUTE_OPTIONS = listOf(
     "RECOMMENDED" to "추천 경로",

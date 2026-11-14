@@ -62,7 +62,7 @@ private class Particle(
 )
 
 /**
- * Motion cue overlay for passengers: particles along the left and right edges move
+ * Steady Flow: overlay for passengers in which particles along the left and right edges move
  * the way the body is pushed by the car's acceleration, so what the eyes see agrees
  * with what the inner ear feels.
  *
@@ -74,7 +74,7 @@ private class Particle(
  * motion that does not match the vehicle, the very conflict this is meant to remove.
  */
 @Composable
-fun MotionCueOverlay(lateralG: Float, longitudinalG: Float, season: Season, modifier: Modifier = Modifier) {
+fun SteadyFlowOverlay(lateralG: Float, longitudinalG: Float, season: Season, modifier: Modifier = Modifier) {
     val accel by rememberUpdatedState(lateralG to longitudinalG)
     val density = LocalDensity.current.density
     var size by remember { mutableStateOf(IntSize.Zero) }

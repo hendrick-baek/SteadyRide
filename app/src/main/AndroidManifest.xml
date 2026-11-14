@@ -15,8 +15,12 @@
     <!-- Pleos NaviHelper: turn-by-turn, caution points, route option -->
     <uses-permission android:name="pleos.car.permission.NAVI_ROUTE" />
     <uses-permission android:name="pleos.car.permission.NAVI_ROUTE_SEARCH" />
+    <uses-permission android:name="pleos.car.permission.NAVI_CUSTOM_MAP" />
     <!-- AAOS standard data (speed) and driving restrictions -->
     <uses-permission android:name="android.car.permission.CAR_SPEED" />
+    <!-- Keeps route requests running while the navigation app is in front (Android 14 freezer) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:label="@string/app_name"
@@ -28,7 +32,11 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop">
+            android:launchMode="singleTop"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden">
+            <!-- Split screen with the navigation resizes the window: keep the running trip
+                 (demo drive, risk, coaching) instead of recreating the activity. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -43,5 +51,13 @@
             <!-- Allowed while driving; the app applies CarUxRestrictions itself -->
             <meta-data android:name="distractionOptimized" android:value="true" />
         </activity>
+        <service
+            android:name=".NaviTaskService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Waits for the in-car navigation to finish a route request the user started" />
+        </service>
     </application>
 </manifest>

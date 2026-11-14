@@ -28,6 +28,16 @@ data class RouteCandidate(
         get() = (turns * 3f + sharpTurns * 7f + uTurns * 9f + bumps * 4f + downhills * 3f).roundToInt()
 }
 
+/** The route the navigation is guiding right now, scored for motion sickness. */
+data class RouteAnalysis(val destination: String, val route: RouteCandidate)
+
+/** Motion-sickness grade of a route's [RouteCandidate.sicknessIndex]. */
+fun sicknessGrade(index: Int) = when {
+    index <= 30 -> "편안"
+    index <= 70 -> "보통"
+    else -> "멀미 주의"
+}
+
 data class RoutePlan(
     val candidates: List<RouteCandidate>,
     val chosen: RouteCandidate?,
